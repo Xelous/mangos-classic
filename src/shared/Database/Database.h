@@ -28,6 +28,10 @@
 #include <boost/thread/tss.hpp>
 #include <atomic>
 
+// Xelous Edit Start
+using my_bool = char;
+// Xelous Edit Ends
+
 class SqlTransaction;
 class SqlResultQueue;
 class SqlQueryHolder;
