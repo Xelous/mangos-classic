@@ -48,8 +48,11 @@
 #include "Movement/MoveSpline.h"
 #include "Entities/CreatureLinkingMgr.h"
 #include "Tools/Formulas.h"
-#include "Metric/Metric.h"
 #include "Entities/Transports.h"
+
+#ifdef BUILD_METRICS
+ #include "Metric/Metric.h"
+#endif
 
 #include <math.h>
 #include <limits>
@@ -452,7 +455,7 @@ void Unit::Update(const uint32 diff)
 {
     if (!IsInWorld())
         return;
-
+#ifdef BUILD_METRICS
     metric::duration<std::chrono::microseconds> meas("unit.update", {
         { "entry", std::to_string(GetEntry()) },
         { "guid", std::to_string(GetGUIDLow()) },
@@ -460,6 +463,7 @@ void Unit::Update(const uint32 diff)
         { "map_id", std::to_string(GetMapId()) },
         { "instance_id", std::to_string(GetInstanceId()) }
     }, 1000);
+#endif
 
     /*if(p_time > m_AurasCheck)
     {
@@ -502,6 +506,7 @@ void Unit::Update(const uint32 diff)
 
     if (AI() && IsAlive())
     {
+#ifdef BUILD_METRICS
         metric::duration<std::chrono::microseconds> meas_ai("unit.update.ai", {
             { "entry", std::to_string(GetEntry()) },
             { "guid", std::to_string(GetGUIDLow()) },
@@ -509,6 +514,7 @@ void Unit::Update(const uint32 diff)
             { "map_id", std::to_string(GetMapId()) },
             { "instance_id", std::to_string(GetInstanceId()) }
         }, 1000);
+#endif
 
         AI()->UpdateAI(diff);   // AI not react good at real update delays (while freeze in non-active part of map)
     }
@@ -805,7 +811,7 @@ uint32 Unit::DealDamage(Unit* dealer, Unit* victim, uint32 damage, CleanDamage c
         if (cleanDamage && damagetype == DIRECT_DAMAGE && dealer != victim && dealer->GetTypeId() == TYPEID_PLAYER && dealer->GetPowerType() == POWER_RAGE && cleanDamage->attackType != RANGED_ATTACK)
             static_cast<Player*>(dealer)->RewardRage(damage, true);
     }
- 
+
     if (!damage)
     {
         // Rage from physical damage received - extend to all units
@@ -1116,7 +1122,7 @@ void Unit::HandleDamageDealt(Unit* dealer, Unit* victim, uint32& damage, CleanDa
         for (auto aura : cleanupHolder)
             victim->RemoveAurasDueToSpell(aura);
     }
-    
+
     if (dealer)
         dealer->InterruptOrDelaySpell(victim, damagetype);
 
@@ -2547,7 +2553,7 @@ void Unit::SendMeleeAttackStart(Unit* pVictim) const
     data << pVictim->GetObjectGuid();
 
     SendMessageToSet(data, true);
-    DEBUG_LOG("WORLD: Sent SMSG_ATTACKSTART");
+    DETAIL_FILTER_LOG(LOG_FILTER_COMBAT, "WORLD: Sent SMSG_ATTACKSTART");
 }
 
 void Unit::SendMeleeAttackStop(Unit* victim) const
@@ -5670,7 +5676,7 @@ void Unit::SendAttackStateUpdate(CalcDamageInfo* calcDamageInfo) const
     SendMessageToSet(data, true);
 }
 
-void Unit::SendAttackStateUpdate(uint32 HitInfo, Unit* target, SpellSchoolMask damageSchoolMask, uint32 Damage, 
+void Unit::SendAttackStateUpdate(uint32 HitInfo, Unit* target, SpellSchoolMask damageSchoolMask, uint32 Damage,
                                  uint32 AbsorbDamage, int32 Resist, VictimState TargetState, uint32 BlockedAmount)
 {
     CalcDamageInfo dmgInfo;
@@ -5739,7 +5745,7 @@ FactionTemplateEntry const* Unit::GetFactionTemplateEntry() const
             guid = GetObjectGuid();
 
             if (guid.GetHigh() == HIGHGUID_PET)
-                sLog.outError("%s (base creature entry %u) have invalid faction template id %u, owner %s", 
+                sLog.outError("%s (base creature entry %u) have invalid faction template id %u, owner %s",
                     GetGuidStr().c_str(), GetEntry(), getFaction(), ((Pet*)this)->GetOwnerGuid().GetString().c_str());
             else
                 sLog.outError("%s have invalid faction template id %u", GetGuidStr().c_str(), getFaction());
@@ -6969,7 +6975,7 @@ bool Unit::IsImmuneToSpell(SpellEntry const* spellInfo, bool /*castOnSelf*/, uin
             return true;
 
     {
-        if (!spellInfo->HasAttribute(SPELL_ATTR_UNAFFECTED_BY_INVULNERABILITY) && 
+        if (!spellInfo->HasAttribute(SPELL_ATTR_UNAFFECTED_BY_INVULNERABILITY) &&
                 !spellInfo->HasAttribute(SPELL_ATTR_EX_DISPEL_AURAS_ON_IMMUNITY))
         {
             bool isPositive = IsPositiveEffectMask(spellInfo, effectMask);
@@ -8098,7 +8104,8 @@ void Unit::SetDeathState(DeathState s)
 
         StopMoving(true);
         i_motionMaster.Clear(false, true);
-        i_motionMaster.MoveIdle();
+        if (!CanFly() || !i_motionMaster.MoveFall())
+            i_motionMaster.MoveIdle();
 
         GetCombatManager().StopEvade();
 
@@ -8297,7 +8304,7 @@ bool Unit::SelectHostileTarget()
         // NOTE: path alrteady generated from AttackStart()
         if (AI()->IsCombatMovement())
         {
-            if (!GetMotionMaster()->GetCurrent()->IsReachable() || !target->isInAccessablePlaceFor(this))
+            if (!GetMotionMaster()->GetCurrent()->IsReachable())
             {
                 if (!GetCombatManager().IsInEvadeMode())
                     GetCombatManager().StartEvadeTimer();
@@ -9153,7 +9160,7 @@ void CharmInfo::InitCharmCreateSpells()
             m_charmspells[x].SetActionAndType(spellId, ACT_DISABLED);
 
             ActiveStates newstate;
-            bool onlyselfcast = true;            
+            bool onlyselfcast = true;
 
             for (uint32 i = 0; i < 3 && onlyselfcast; ++i)  // nonexistent spell will not make any problems as onlyselfcast would be false -> break right away
             {
@@ -9447,27 +9454,9 @@ void Unit::InterruptMoving(bool forceSendStop /*=false*/)
 
     if (!movespline->Finalized())
     {
-        Movement::Location computedLoc = movespline->ComputePosition();
-        Position pos(computedLoc.x, computedLoc.y, computedLoc.z, computedLoc.orientation);
-        if (GenericTransport* transport = GetTransport())
-        {
-            m_movementInfo.UpdateTransportData(pos);
-            transport->CalculatePassengerPosition(pos.x, pos.y, pos.z, &pos.o);
-        }
-
-        if (movespline->isFacing() && movespline->isFacingTarget())
-        {
-            if (Unit const* target = ObjectAccessor::GetUnit(*this, ObjectGuid(movespline->GetFacing().target)))
-                pos.o = GetAngle(target);
-            else
-            {
-                float angle = atan2((pos.y - GetPositionY()), (pos.x - GetPositionX()));
-                pos.o = (angle >= 0 ? angle : ((2 * M_PI_F) + angle));
-            }
-        }
+        UpdateSplinePosition(true);
 
         movespline->_Interrupt();
-        Relocate(pos.x, pos.y, pos.z, pos.o);
         isMoving = true;
     }
 
@@ -10473,7 +10462,7 @@ void Unit::UpdateSplineMovement(uint32 t_diff)
 
     if (movespline->Finalized())
         return;
-
+#ifdef BUILD_METRICS
     metric::duration<std::chrono::microseconds> meas("unit.updatesplinemovement", {
         { "entry", std::to_string(GetEntry()) },
         { "guid", std::to_string(GetGUIDLow()) },
@@ -10481,7 +10470,7 @@ void Unit::UpdateSplineMovement(uint32 t_diff)
         { "map_id", std::to_string(GetMapId()) },
         { "instance_id", std::to_string(GetInstanceId()) }
     }, 1000);
-
+#endif
     movespline->updateState(t_diff);
     bool arrived = movespline->Finalized();
 
@@ -10492,33 +10481,11 @@ void Unit::UpdateSplineMovement(uint32 t_diff)
     if (m_movesplineTimer.Passed() || arrived)
     {
         m_movesplineTimer.Reset(POSITION_UPDATE_DELAY);
-        Movement::Location computedLoc = movespline->ComputePosition();
-        Position pos(computedLoc.x, computedLoc.y, computedLoc.z, computedLoc.orientation);
-        if (GenericTransport* transport = GetTransport())
-        {
-            m_movementInfo.UpdateTransportData(pos);
-            transport->CalculatePassengerPosition(pos.x, pos.y, pos.z, &pos.o);
-        }
-
-        if (movespline->isFacing() && movespline->isFacingTarget())
-        {
-            if (Unit const* target = ObjectAccessor::GetUnit(*this, ObjectGuid(movespline->GetFacing().target)))
-                pos.o = GetAngle(target);
-            else
-            {
-                float angle = atan2((pos.y - GetPositionY()), (pos.x - GetPositionX()));
-                pos.o = (angle >= 0 ? angle : ((2 * M_PI_F) + angle));
-            }
-        }
-
-        if (GetTypeId() == TYPEID_PLAYER)
-            ((Player*)this)->SetPosition(pos.x, pos.y, pos.z, pos.o);
-        else
-            GetMap()->CreatureRelocation((Creature*)this, pos.x, pos.y, pos.z, pos.o);
+        UpdateSplinePosition();
     }
 }
 
-void Unit::UpdateSplinePosition()
+void Unit::UpdateSplinePosition(bool relocateOnly)
 {
     Movement::Location computedLoc = movespline->ComputePosition();
     Position pos(computedLoc.x, computedLoc.y, computedLoc.z, computedLoc.orientation);
@@ -10527,18 +10494,46 @@ void Unit::UpdateSplinePosition()
         m_movementInfo.UpdateTransportData(pos);
         transport->CalculatePassengerPosition(pos.x, pos.y, pos.z, &pos.o);
     }
-    if (GenericTransport* transport = GetTransport())
-        transport->CalculatePassengerPosition(pos.x, pos.y, pos.z, &pos.o);
 
-    if (movespline->isFacing() && movespline->isFacingTarget())
+    bool faced = false;
+    if (movespline->isFacing())
     {
-        if (Unit const* target = ObjectAccessor::GetUnit(*this, ObjectGuid(movespline->GetFacing().target)))
-            pos.o = GetAngle(target);
+        if (movespline->isFacingTarget())
+        {
+            if (Unit const* target = ObjectAccessor::GetUnit(*this, ObjectGuid(movespline->GetFacing().target)))
+            {
+                pos.o = GetAngle(target);
+                faced = true;
+            }
+        }
+        else if (movespline->isFacingPoint())
+        {
+            auto& facing = movespline->GetFacing();
+            pos.o = GetAngle(facing.f.x, facing.f.y);
+            faced = true;
+        }
+        else if (movespline->isFacingAngle())
+        {
+            pos.o = movespline->GetFacing().angle;
+            faced = true;
+        }
+    }
+
+    if (!faced)
+    {
+        if (pos.y == GetPositionY() && pos.x == GetPositionX())
+            pos.o = GetOrientation();
         else
         {
             float angle = atan2((pos.y - GetPositionY()), (pos.x - GetPositionX()));
             pos.o = (angle >= 0 ? angle : ((2 * M_PI_F) + angle));
         }
+    }
+
+    if (relocateOnly)
+    {
+        Relocate(pos.x, pos.y, pos.z, pos.o);
+        return;
     }
 
     if (IsPlayer())
@@ -11035,7 +11030,7 @@ void Unit::Uncharm(Unit* charmed, uint32 spellId)
 
     // if charm expires mid evade clear evade since movement is also cleared
     // TODO: maybe should be done on HomeMovementGenerator::MovementExpires
-    charmed->GetCombatManager().SetEvadeState(EVADE_NONE); 
+    charmed->GetCombatManager().SetEvadeState(EVADE_NONE);
 
     if (charmed->GetTypeId() == TYPEID_UNIT)
     {
@@ -11145,7 +11140,7 @@ void Unit::Uncharm(Unit* charmed, uint32 spellId)
                 Position const& pos = charmInfo->GetCharmStartPosition();
                 if (!pos.IsEmpty())
                     static_cast<Creature*>(charmed)->SetCombatStartPosition(pos);
-            }                
+            }
         }
     }
     else
